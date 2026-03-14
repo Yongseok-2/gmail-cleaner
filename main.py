@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,10 +11,11 @@ from app.services.kafka_producer import kafka_email_producer
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    """앱 시작/종료 시 Kafka producer 생명주기를 관리한다."""
     try:
         await kafka_email_producer.start()
     except Exception:
-        # Keep API available for auth endpoints even when Kafka is unavailable.
+        # Kafka가 불가해도 인증 API는 동작하도록 유지
         pass
     try:
         yield
@@ -21,12 +23,18 @@ async def lifespan(_: FastAPI):
         await kafka_email_producer.stop()
 
 
-app = FastAPI(title="InboxZero AI API", version="0.3.0", lifespan=lifespan)
+app = FastAPI(
+    title="InboxZero AI API",
+    version="0.3.0",
+    description="InboxZero AI 백엔드 API (인증, 메일 분석, 일괄 처리)",
+    lifespan=lifespan,
+)
 app.include_router(auth_router)
 app.include_router(email_router)
 app.include_router(analysis_router)
 
 
-@app.get("/health")
+@app.get("/health", summary="헬스체크", description="서버 기본 상태를 확인한다.")
 async def health_check() -> dict[str, str]:
+    """애플리케이션 상태를 반환한다."""
     return {"status": "ok"}

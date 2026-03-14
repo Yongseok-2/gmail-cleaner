@@ -19,7 +19,10 @@ ALLOWED_CATEGORIES = {
 
 
 class EmailAnalyzer:
+    """Analyze email category, urgency, and summary."""
+
     async def analyze_email(self, email: dict[str, Any]) -> dict[str, Any]:
+        """Run rule-based analysis and fallback to Gemini for ambiguous cases."""
         rule_result = self._analyze_with_rules(email)
         if not self._is_ambiguous(rule_result):
             return rule_result
@@ -32,6 +35,7 @@ class EmailAnalyzer:
         return rule_result
 
     def _analyze_with_rules(self, email: dict[str, Any]) -> dict[str, Any]:
+        """Perform fast rule-based analysis."""
         subject = (email.get("subject") or "").strip()
         snippet = (email.get("snippet") or "").strip()
         from_email = (email.get("from_email") or "").strip().lower()
@@ -57,6 +61,7 @@ class EmailAnalyzer:
         }
 
     def _is_ambiguous(self, result: dict[str, Any]) -> bool:
+        """Return True for low-confidence or unknown category result."""
         return bool(
             result["confidence_score"] < settings.analysis_confidence_threshold
             or result["category"] == "other"
@@ -65,6 +70,7 @@ class EmailAnalyzer:
     async def _analyze_with_gemini(
         self, email: dict[str, Any], fallback: dict[str, Any]
     ) -> dict[str, Any] | None:
+        """Re-analyze ambiguous cases with Gemini model."""
         if not settings.gemini_api_key:
             return None
 
@@ -119,6 +125,7 @@ class EmailAnalyzer:
         }
 
     def _parse_gemini_json(self, response_json: dict[str, Any]) -> dict[str, Any] | None:
+        """Parse JSON text from Gemini response."""
         try:
             candidates = response_json.get("candidates", [])
             if not candidates:
@@ -132,6 +139,7 @@ class EmailAnalyzer:
             return None
 
     def _build_gemini_prompt(self, email: dict[str, Any], fallback: dict[str, Any]) -> str:
+        """Build prompt for Gemini classification request."""
         return (
             "You are classifying a Gmail message for inbox triage.\n"
             "Return JSON only with fields: category, urgency_score, summary, keywords, confidence_score.\n"
@@ -145,6 +153,7 @@ class EmailAnalyzer:
         )
 
     def _classify_category(self, text: str, from_email: str) -> tuple[str, float]:
+        """Classify category and return confidence score."""
         if any(word in text for word in ["invoice", "receipt", "billing", "payment"]):
             return ("finance_billing", 0.86)
         if any(word in text for word in ["meeting", "schedule", "calendar", "action required"]):
@@ -162,6 +171,7 @@ class EmailAnalyzer:
         return ("other", 0.45)
 
     def _score_urgency(self, text: str) -> int:
+        """Compute urgency score between 0 and 100."""
         score = 20
         if any(word in text for word in ["urgent", "asap", "immediately", "today"]):
             score += 35
@@ -172,6 +182,7 @@ class EmailAnalyzer:
         return min(score, 100)
 
     def _extract_keywords(self, text: str) -> list[str]:
+        """Extract a small keyword set for UI and filtering."""
         candidate_words = [
             "invoice",
             "payment",
@@ -189,6 +200,7 @@ class EmailAnalyzer:
         return [word for word in candidate_words if word in text]
 
     def _build_summary(self, subject: str, snippet: str) -> str:
+        """Build short summary from subject/snippet."""
         if subject and snippet:
             return f"{subject} - {snippet[:120]}"
         if subject:
@@ -196,6 +208,7 @@ class EmailAnalyzer:
         return snippet[:160]
 
     def _build_draft_context(self, category: str, summary: str) -> str:
+        """Build compact context string for draft generation."""
         return f"category={category}; summary={summary}"
 
 

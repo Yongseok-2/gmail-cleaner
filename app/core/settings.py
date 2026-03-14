@@ -1,4 +1,9 @@
-import os
+﻿import os
+
+from dotenv import load_dotenv
+
+# Load .env values before reading settings.
+load_dotenv()
 
 
 class Settings:

@@ -19,4 +19,4 @@ class EmailAnalysisItem(BaseModel):
 
 class EmailAnalysisListResponse(BaseModel):
     items: list[EmailAnalysisItem]
-    count: int
+    count: int

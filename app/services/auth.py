@@ -16,7 +16,10 @@ DEFAULT_SCOPES = f"{GMAIL_SCOPE} {PEOPLE_SCOPE}"
 
 
 class GoogleOAuthService:
+    """Google OAuth 토큰 발급/갱신을 담당하는 서비스"""
+
     def __init__(self) -> None:
+        """OAuth 클라이언트 설정을 초기화한다."""
         self.credentials_path = Path(
             os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
         )
@@ -28,6 +31,7 @@ class GoogleOAuthService:
         self._load_client_settings()
 
     def _load_client_settings(self) -> None:
+        """credentials.json 또는 환경변수에서 OAuth 클라이언트 정보를 읽는다."""
         if self.credentials_path.exists():
             try:
                 data = json.loads(self.credentials_path.read_text(encoding="utf-8"))
@@ -48,6 +52,7 @@ class GoogleOAuthService:
             self.redirect_uris = [raw_redirect_uri] if raw_redirect_uri else []
 
     def _validate_config(self) -> None:
+        """필수 OAuth 클라이언트 설정 존재 여부를 검증한다."""
         if not self.client_id or not self.client_secret:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -55,6 +60,7 @@ class GoogleOAuthService:
             )
 
     def _resolve_redirect_uri(self, redirect_uri: str | None) -> str:
+        """요청값 또는 기본 설정에서 사용할 redirect URI를 결정한다."""
         if redirect_uri:
             return redirect_uri
         if self.redirect_uris:
@@ -67,6 +73,7 @@ class GoogleOAuthService:
     def build_authorization_url(
         self, redirect_uri: str | None, state: str | None = None
     ) -> str:
+        """Google 동의 화면 URL을 생성한다."""
         self._validate_config()
         query_params = {
             "client_id": self.client_id,
@@ -82,6 +89,7 @@ class GoogleOAuthService:
         return f"{self.auth_url}?{urlencode(query_params)}"
 
     def _append_expiry(self, token_data: dict[str, Any], refreshed: bool) -> dict[str, Any]:
+        """토큰 응답에 expires_at/refreshed 메타데이터를 추가한다."""
         expires_in = int(token_data.get("expires_in", 0))
         expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
         token_data["expires_at"] = expires_at
@@ -91,6 +99,7 @@ class GoogleOAuthService:
     async def exchange_code_for_tokens(
         self, code: str, redirect_uri: str | None
     ) -> dict[str, Any]:
+        """Authorization code를 access/refresh token으로 교환한다."""
         self._validate_config()
         payload = {
             "code": code,
@@ -103,6 +112,7 @@ class GoogleOAuthService:
         return self._append_expiry(token_data, refreshed=False)
 
     async def refresh_access_token(self, refresh_token: str) -> dict[str, Any]:
+        """Refresh token으로 새 access token을 발급받는다."""
         self._validate_config()
         payload = {
             "refresh_token": refresh_token,
@@ -121,6 +131,7 @@ class GoogleOAuthService:
         refresh_token: str,
         expires_at: datetime | None,
     ) -> dict[str, Any]:
+        """현재 access token이 유효하면 그대로 반환하고, 아니면 자동 갱신한다."""
         now = datetime.now(UTC)
         if (
             access_token
@@ -139,6 +150,7 @@ class GoogleOAuthService:
         return await self.refresh_access_token(refresh_token)
 
     async def _request_token(self, payload: dict[str, str]) -> dict[str, Any]:
+        """Google OAuth 토큰 엔드포인트에 요청을 보내고 결과를 반환한다."""
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 response = await client.post(self.token_url, data=payload)

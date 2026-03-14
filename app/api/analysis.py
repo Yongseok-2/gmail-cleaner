@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from fastapi import APIRouter, Query
 import asyncpg
 
@@ -7,8 +8,14 @@ from app.models.analysis import EmailAnalysisItem, EmailAnalysisListResponse
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 
-@router.get("/recent", response_model=EmailAnalysisListResponse)
+@router.get(
+    "/recent",
+    response_model=EmailAnalysisListResponse,
+    summary="최근 분석 결과 조회",
+    description="DB에 저장된 최근 메일 분석 결과를 최신순으로 조회한다.",
+)
 async def get_recent_analysis(limit: int = Query(default=20, ge=1, le=200)) -> EmailAnalysisListResponse:
+    """최근 분석 결과 목록을 반환한다."""
     query = """
     SELECT
         a.gmail_message_id,

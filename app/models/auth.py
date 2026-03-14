@@ -1,5 +1,7 @@
-from pydantic import BaseModel, Field
+# -*- coding: utf-8 -*-
 from datetime import datetime
+
+from pydantic import BaseModel, Field
 
 
 class GoogleAuthorizeResponse(BaseModel):
@@ -7,10 +9,10 @@ class GoogleAuthorizeResponse(BaseModel):
 
 
 class TokenExchangeRequest(BaseModel):
-    code: str = Field(..., description="Google OAuth2 authorization code")
+    code: str = Field(..., description="Google OAuth2 인가 코드")
     redirect_uri: str | None = Field(
         default=None,
-        description="Redirect URI used during OAuth consent; falls back to credentials.json value",
+        description="OAuth 동의 시 사용한 Redirect URI (없으면 credentials.json 기본값 사용)",
     )
 
 
@@ -35,10 +37,10 @@ class ManagedGoogleTokenResponse(GoogleTokenResponse):
 class EnsureTokenRequest(BaseModel):
     access_token: str | None = Field(
         default=None,
-        description="Current access token if available",
+        description="현재 access token (있는 경우)",
     )
     refresh_token: str = Field(..., description="Google OAuth2 refresh token")
     expires_at: datetime | None = Field(
         default=None,
-        description="Access token expiry time in ISO-8601 (UTC recommended)",
+        description="access token 만료 시각(ISO-8601, UTC 권장)",
     )

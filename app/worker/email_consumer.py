@@ -1,5 +1,6 @@
-import asyncio
+﻿import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -71,8 +72,20 @@ DO UPDATE SET
     analyzed_at = EXCLUDED.analyzed_at;
 """
 
+logger = logging.getLogger(__name__)
+
+
+def safe_deserialize(value: bytes) -> dict[str, Any] | None:
+    """Deserialize Kafka bytes safely; skip invalid payload."""
+    try:
+        return json.loads(value.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning("Skip invalid Kafka payload")
+        return None
+
 
 async def save_email(pool: asyncpg.Pool, email: dict[str, Any]) -> None:
+    """Save or update raw email payload."""
     async with pool.acquire() as conn:
         await conn.execute(
             INSERT_RAW_SQL,
@@ -91,6 +104,7 @@ async def save_email(pool: asyncpg.Pool, email: dict[str, Any]) -> None:
 
 
 async def save_email_analysis(pool: asyncpg.Pool, analysis: dict[str, Any]) -> None:
+    """Save or update email analysis result."""
     async with pool.acquire() as conn:
         await conn.execute(
             INSERT_ANALYSIS_SQL,
@@ -109,6 +123,7 @@ async def save_email_analysis(pool: asyncpg.Pool, analysis: dict[str, Any]) -> N
 
 
 async def run_consumer() -> None:
+    """Consume Kafka messages and persist raw + analyzed records."""
     pool = await asyncpg.create_pool(dsn=settings.postgres_dsn, min_size=1, max_size=5)
     consumer = AIOKafkaConsumer(
         settings.email_raw_topic,
@@ -116,12 +131,14 @@ async def run_consumer() -> None:
         group_id=settings.kafka_group_id,
         auto_offset_reset="earliest",
         enable_auto_commit=True,
-        value_deserializer=lambda value: json.loads(value.decode("utf-8")),
+        value_deserializer=safe_deserialize,
     )
     await consumer.start()
     try:
         async for msg in consumer:
             email_payload = msg.value
+            if not email_payload:
+                continue
             await save_email(pool, email_payload)
             analysis_payload = await email_analyzer.analyze_email(email_payload)
             await save_email_analysis(pool, analysis_payload)
