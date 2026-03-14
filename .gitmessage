@@ -1,7 +1,4 @@
-type(scope): subject
 
-# body
-#
 
 # --- 커밋 타입 ---
 # feat: 새로운 기능
@@ -11,8 +8,3 @@ type(scope): subject
 # refactor: 리팩토링
 # test: 테스트 코드
 # chore: 빌드 / 설정
-
-# --- 규칙 ---
-# 제목은 명령형
-# 제목 끝에 . 금지
-# 제목 + 본문 사이 한 줄
