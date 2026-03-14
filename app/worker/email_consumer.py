@@ -7,8 +7,9 @@ import asyncpg
 from aiokafka import AIOKafkaConsumer
 
 from app.core.settings import settings
+from app.services.email_analyzer import email_analyzer
 
-INSERT_SQL = """
+INSERT_RAW_SQL = """
 INSERT INTO emails_raw (
     gmail_message_id,
     gmail_thread_id,
@@ -39,11 +40,42 @@ DO UPDATE SET
     processed_at = EXCLUDED.processed_at;
 """
 
+INSERT_ANALYSIS_SQL = """
+INSERT INTO email_analysis (
+    gmail_message_id,
+    sender_email,
+    category,
+    urgency_score,
+    summary,
+    keywords,
+    confidence_score,
+    analysis_source,
+    review_required,
+    draft_reply_context,
+    analyzed_at
+)
+VALUES (
+    $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11
+)
+ON CONFLICT (gmail_message_id)
+DO UPDATE SET
+    sender_email = EXCLUDED.sender_email,
+    category = EXCLUDED.category,
+    urgency_score = EXCLUDED.urgency_score,
+    summary = EXCLUDED.summary,
+    keywords = EXCLUDED.keywords,
+    confidence_score = EXCLUDED.confidence_score,
+    analysis_source = EXCLUDED.analysis_source,
+    review_required = EXCLUDED.review_required,
+    draft_reply_context = EXCLUDED.draft_reply_context,
+    analyzed_at = EXCLUDED.analyzed_at;
+"""
+
 
 async def save_email(pool: asyncpg.Pool, email: dict[str, Any]) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
-            INSERT_SQL,
+            INSERT_RAW_SQL,
             email.get("gmail_message_id"),
             email.get("gmail_thread_id"),
             email.get("subject"),
@@ -55,6 +87,24 @@ async def save_email(pool: asyncpg.Pool, email: dict[str, Any]) -> None:
             json.dumps(email.get("label_ids", [])),
             json.dumps(email.get("raw", {})),
             datetime.now(UTC),
+        )
+
+
+async def save_email_analysis(pool: asyncpg.Pool, analysis: dict[str, Any]) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            INSERT_ANALYSIS_SQL,
+            analysis["gmail_message_id"],
+            analysis.get("sender_email"),
+            analysis["category"],
+            analysis["urgency_score"],
+            analysis["summary"],
+            json.dumps(analysis.get("keywords", [])),
+            analysis["confidence_score"],
+            analysis["analysis_source"],
+            analysis["review_required"],
+            analysis.get("draft_reply_context"),
+            analysis["analyzed_at"],
         )
 
 
@@ -73,6 +123,8 @@ async def run_consumer() -> None:
         async for msg in consumer:
             email_payload = msg.value
             await save_email(pool, email_payload)
+            analysis_payload = await email_analyzer.analyze_email(email_payload)
+            await save_email_analysis(pool, analysis_payload)
     finally:
         await consumer.stop()
         await pool.close()
