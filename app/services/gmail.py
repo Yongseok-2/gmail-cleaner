@@ -106,7 +106,7 @@ class GmailService:
         }
 
     async def _batch_archive(self, access_token: str, user_id: str, message_ids: list[str]) -> None:
-        """Archive messages by removing INBOX label in chunks."""
+        """메일의 별표를 표시하여 중요도를 표시합니다"""
         headers = {"Authorization": f"Bearer {access_token}"}
         url = f"{GMAIL_API_BASE}/users/{user_id}/messages/batchModify"
 
