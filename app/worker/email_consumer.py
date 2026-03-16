@@ -88,6 +88,12 @@ def safe_deserialize(value: bytes) -> dict[str, Any] | None:
         return None
 
 
+def has_valid_account_id(email_payload: dict[str, Any]) -> bool:
+    """멀티 사용자 분리를 위해 유효한 account_id 여부를 확인합니다."""
+    account_id = str(email_payload.get("account_id", "")).strip()
+    return bool(account_id and account_id != "unknown")
+
+
 async def save_email(pool: asyncpg.Pool, email: dict[str, Any]) -> None:
     """Save or update raw email payload."""
     async with pool.acquire() as conn:
@@ -149,11 +155,10 @@ async def run_consumer() -> None:
             email_payload = msg.value
             if not email_payload:
                 continue
-            account_id = str(email_payload.get("account_id", "")).strip()
-            # 멀티 사용자 분리를 위해 account_id가 없는 payload는 저장하지 않는다.
-            if not account_id or account_id == "unknown":
+            if not has_valid_account_id(email_payload):
                 logger.warning("Skip payload without valid account_id")
                 continue
+            account_id = str(email_payload.get("account_id", "")).strip()
             await save_email(pool, email_payload)
             analysis_payload = await email_analyzer.analyze_email(email_payload)
             await save_email_analysis(pool, account_id=account_id, analysis=analysis_payload)

@@ -1,7 +1,6 @@
 ﻿from fastapi import APIRouter, Query
-import asyncpg
 
-from app.core.settings import settings
+from app.core.db import get_db_pool
 from app.models.analysis import EmailAnalysisItem, EmailAnalysisListResponse
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
@@ -38,12 +37,9 @@ async def get_recent_analysis(
     LIMIT $2
     """
 
-    pool = await asyncpg.create_pool(dsn=settings.postgres_dsn, min_size=1, max_size=3)
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, account_id, limit)
-    finally:
-        await pool.close()
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, account_id, limit)
 
     items = [
         EmailAnalysisItem(

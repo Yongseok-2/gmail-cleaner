@@ -33,6 +33,7 @@ class TriagePreviewDbRequest(BaseModel):
 class TriageGroupItem(BaseModel):
     group_id: str
     bucket: Literal["unread", "stale"]
+    label_group: Literal["important", "starred", "user_labeled", "normal"]
     sender: str = Field(..., description="화면 표시용 발신자명")
     category: str
     count: int
@@ -53,12 +54,18 @@ class CategorySummaryItem(BaseModel):
     count: int
 
 
+class LabelSummaryItem(BaseModel):
+    label_group: Literal["important", "starred", "user_labeled", "normal"]
+    count: int
+
+
 class TriagePreviewResponse(BaseModel):
     total_unread: int
     total_stale: int
     groups: list[TriageGroupItem]
     bucket_summary: list[BucketSummaryItem]
     category_summary: list[CategorySummaryItem]
+    label_summary: list[LabelSummaryItem]
 
 
 class BulkActionRequest(BaseModel):
@@ -72,4 +79,24 @@ class BulkActionRequest(BaseModel):
 class BulkActionResponse(BaseModel):
     action: Literal["archive", "trash"]
     processed_count: int
+    failed_count: int = 0
+    partial_failed: bool = False
+    success_ids: list[str] = Field(default_factory=list)
+    failed_ids: list[str] = Field(default_factory=list)
+
+
+class LabelUpdateRequest(BaseModel):
+    access_token: str = Field(..., description="Google OAuth2 access token")
+    account_id: str = Field(..., min_length=2, max_length=200, description="서비스 내 사용자 식별자(예: Google 이메일)")
+    user_id: str = Field(default="me", description="Gmail 사용자 ID (일반적으로 me)")
+    message_ids: list[str] = Field(..., min_length=1, max_length=5000, description="라벨을 변경할 Gmail message ID 목록")
+    add_label_ids: list[str] = Field(default_factory=list, description="추가할 Gmail 라벨 ID 목록")
+    remove_label_ids: list[str] = Field(default_factory=list, description="제거할 Gmail 라벨 ID 목록")
+
+
+class LabelUpdateResponse(BaseModel):
+    processed_count: int
+    failed_count: int = 0
+    partial_failed: bool = False
+    success_ids: list[str] = Field(default_factory=list)
     failed_ids: list[str] = Field(default_factory=list)

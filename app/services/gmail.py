@@ -34,8 +34,8 @@ class GmailService:
         max_stale: int = 100,
     ) -> dict[str, list[dict[str, Any]]]:
         """Fetch unread and stale buckets for triage."""
-        unread_query = "is:unread -in:trash -in:spam -is:starred -label:important -has:userlabels"
-        stale_query = "older_than:6m -is:unread -in:trash -in:spam -is:starred -label:important -has:userlabels"
+        unread_query = "is:unread -in:trash -in:spam"
+        stale_query = "older_than:6m -is:unread -in:trash -in:spam"
 
         headers = {"Authorization": f"Bearer {access_token}"}
         async with httpx.AsyncClient(timeout=20) as client:
@@ -105,8 +105,38 @@ class GmailService:
             "failed_ids": failed_ids,
         }
 
+    async def apply_label_updates(
+        self,
+        access_token: str,
+        user_id: str,
+        message_ids: list[str],
+        add_label_ids: list[str],
+        remove_label_ids: list[str],
+    ) -> dict[str, Any]:
+        """Apply Gmail label updates in chunks and return processed/failed IDs."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        url = f"{GMAIL_API_BASE}/users/{user_id}/messages/batchModify"
+
+        failed_ids: list[str] = []
+        chunks = [message_ids[i : i + 1000] for i in range(0, len(message_ids), 1000)]
+        async with httpx.AsyncClient(timeout=20) as client:
+            for chunk in chunks:
+                payload = {
+                    "ids": chunk,
+                    "addLabelIds": add_label_ids,
+                    "removeLabelIds": remove_label_ids,
+                }
+                response = await client.post(url, headers=headers, json=payload)
+                if response.status_code >= 400:
+                    failed_ids.extend(chunk)
+
+        return {
+            "processed_count": len(message_ids) - len(failed_ids),
+            "failed_ids": failed_ids,
+        }
+
     async def _batch_archive(self, access_token: str, user_id: str, message_ids: list[str]) -> None:
-        """메일의 별표를 표시하여 중요도를 표시합니다"""
+        """메일의 별표를 표시하여 중요도를 표시합니다."""
         headers = {"Authorization": f"Bearer {access_token}"}
         url = f"{GMAIL_API_BASE}/users/{user_id}/messages/batchModify"
 
@@ -253,4 +283,3 @@ class GmailService:
 
 
 gmail_service = GmailService()
-

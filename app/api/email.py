@@ -1,9 +1,9 @@
 ﻿from email.utils import parseaddr
+from typing import Any
 
-import asyncpg
 from fastapi import APIRouter
 
-from app.core.settings import settings
+from app.core.db import get_db_pool
 from app.models.email import (
     BucketSummaryItem,
     BulkActionRequest,
@@ -11,6 +11,9 @@ from app.models.email import (
     CategorySummaryItem,
     EmailSyncRequest,
     EmailSyncResponse,
+    LabelSummaryItem,
+    LabelUpdateRequest,
+    LabelUpdateResponse,
     TriageGroupItem,
     TriagePreviewDbRequest,
     TriagePreviewRequest,
@@ -64,7 +67,7 @@ async def preview_triage_groups(payload: TriagePreviewRequest) -> TriagePreviewR
         max_stale=payload.max_stale,
     )
 
-    groups: dict[tuple[str, str, str], dict[str, object]] = {}
+    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 
     for bucket, items in [("unread", triage_data["unread"]), ("stale", triage_data["stale"])]:
         for email in items:
@@ -72,12 +75,14 @@ async def preview_triage_groups(payload: TriagePreviewRequest) -> TriagePreviewR
             sender_display = _extract_sender_display(email.get("from_email", ""))
             sender_key = _sender_group_key(email.get("from_email", ""))
             category = analysis["category"]
-            key = (bucket, sender_key, category)
+            label_group = _detect_label_group(email.get("label_ids", []))
+            key = (bucket, label_group, sender_key, category)
 
             if key not in groups:
                 groups[key] = {
-                    "group_id": f"{bucket}|{sender_key}|{category}",
+                    "group_id": f"{bucket}|{label_group}|{sender_key}|{category}",
                     "bucket": bucket,
+                    "label_group": label_group,
                     "sender": sender_display,
                     "category": category,
                     "count": 0,
@@ -88,12 +93,10 @@ async def preview_triage_groups(payload: TriagePreviewRequest) -> TriagePreviewR
                 }
 
             group = groups[key]
-            group["count"] = int(group["count"]) + 1
-            group["confidence_sum"] = float(group["confidence_sum"]) + float(
-                analysis.get("confidence_score", 0.0)
-            )
+            group["count"] += 1
+            group["confidence_sum"] += float(analysis.get("confidence_score", 0.0))
             if analysis.get("review_required", False):
-                group["review_required_count"] = int(group["review_required_count"]) + 1
+                group["review_required_count"] += 1
             group["message_ids"].append(email.get("gmail_message_id", ""))
             if len(group["sample_subjects"]) < 3:
                 group["sample_subjects"].append(email.get("subject", ""))
@@ -149,20 +152,17 @@ async def preview_triage_groups_from_db(payload: TriagePreviewDbRequest) -> Tria
     SELECT * FROM stale_rows
     """
 
-    pool = await asyncpg.create_pool(dsn=settings.postgres_dsn, min_size=1, max_size=3)
-    try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                query,
-                payload.max_unread,
-                payload.stale_months,
-                payload.max_stale,
-                payload.account_id,
-            )
-    finally:
-        await pool.close()
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            query,
+            payload.max_unread,
+            payload.stale_months,
+            payload.max_stale,
+            payload.account_id,
+        )
 
-    groups: dict[tuple[str, str, str], dict[str, object]] = {}
+    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 
     for row in rows:
         from_email = row["from_email"] or ""
@@ -170,12 +170,14 @@ async def preview_triage_groups_from_db(payload: TriagePreviewDbRequest) -> Tria
         sender_key = _sender_group_key(from_email)
         bucket = str(row["bucket"])
         category = str(row["category"])
-        key = (bucket, sender_key, category)
+        label_group = _detect_label_group(row["label_ids"] or [])
+        key = (bucket, label_group, sender_key, category)
 
         if key not in groups:
             groups[key] = {
-                "group_id": f"{bucket}|{sender_key}|{category}",
+                "group_id": f"{bucket}|{label_group}|{sender_key}|{category}",
                 "bucket": bucket,
+                "label_group": label_group,
                 "sender": sender_display,
                 "category": category,
                 "count": 0,
@@ -186,10 +188,10 @@ async def preview_triage_groups_from_db(payload: TriagePreviewDbRequest) -> Tria
             }
 
         group = groups[key]
-        group["count"] = int(group["count"]) + 1
-        group["confidence_sum"] = float(group["confidence_sum"]) + float(row["confidence_score"] or 0.0)
+        group["count"] += 1
+        group["confidence_sum"] += float(row["confidence_score"] or 0.0)
         if bool(row["review_required"]):
-            group["review_required_count"] = int(group["review_required_count"]) + 1
+            group["review_required_count"] += 1
 
         message_id = str(row["gmail_message_id"])
         group["message_ids"].append(message_id)
@@ -215,15 +217,56 @@ async def apply_triage_action(payload: BulkActionRequest) -> BulkActionResponse:
         user_id=payload.user_id,
     )
 
+    failed_ids = result["failed_ids"]
+    failed_set = set(failed_ids)
+    success_ids = [mid for mid in payload.message_ids if mid not in failed_set]
+
     if payload.action == "trash":
-        failed_set = set(result["failed_ids"])
-        deleted_ids = [mid for mid in payload.message_ids if mid not in failed_set]
-        await _delete_messages_from_db(account_id=payload.account_id, message_ids=deleted_ids)
+        await _delete_messages_from_db(account_id=payload.account_id, message_ids=success_ids)
 
     return BulkActionResponse(
         action=payload.action,
         processed_count=result["processed_count"],
-        failed_ids=result["failed_ids"],
+        failed_count=len(failed_ids),
+        partial_failed=bool(failed_ids),
+        success_ids=success_ids,
+        failed_ids=failed_ids,
+    )
+
+
+@router.post(
+    "/labels",
+    response_model=LabelUpdateResponse,
+    summary="라벨 변경 동기화",
+)
+async def update_labels(payload: LabelUpdateRequest) -> LabelUpdateResponse:
+    """Gmail 라벨 변경과 DB label_ids 동기화를 함께 수행합니다."""
+    result = await gmail_service.apply_label_updates(
+        access_token=payload.access_token,
+        user_id=payload.user_id,
+        message_ids=payload.message_ids,
+        add_label_ids=payload.add_label_ids,
+        remove_label_ids=payload.remove_label_ids,
+    )
+
+    failed_ids = result["failed_ids"]
+    failed_set = set(failed_ids)
+    success_ids = [mid for mid in payload.message_ids if mid not in failed_set]
+
+    if success_ids:
+        await _sync_label_ids_in_db(
+            account_id=payload.account_id,
+            message_ids=success_ids,
+            add_label_ids=payload.add_label_ids,
+            remove_label_ids=payload.remove_label_ids,
+        )
+
+    return LabelUpdateResponse(
+        processed_count=result["processed_count"],
+        failed_count=len(failed_ids),
+        partial_failed=bool(failed_ids),
+        success_ids=success_ids,
+        failed_ids=failed_ids,
     )
 
 
@@ -233,15 +276,46 @@ async def _delete_messages_from_db(account_id: str, message_ids: list[str]) -> N
         return
 
     query = "DELETE FROM emails_raw WHERE account_id = $1 AND gmail_message_id = ANY($2::text[])"
-    pool = await asyncpg.create_pool(dsn=settings.postgres_dsn, min_size=1, max_size=3)
-    try:
-        async with pool.acquire() as conn:
-            await conn.execute(query, account_id, message_ids)
-    finally:
-        await pool.close()
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(query, account_id, message_ids)
 
 
-def _build_triage_response(groups: dict[tuple[str, str, str], dict[str, object]]) -> TriagePreviewResponse:
+async def _sync_label_ids_in_db(
+    account_id: str,
+    message_ids: list[str],
+    add_label_ids: list[str],
+    remove_label_ids: list[str],
+) -> None:
+    """DB emails_raw.label_ids를 Gmail 변경 결과에 맞춰 동기화합니다."""
+    if not message_ids:
+        return
+
+    pool = get_db_pool()
+    select_sql = """
+    SELECT gmail_message_id, label_ids
+    FROM emails_raw
+    WHERE account_id = $1 AND gmail_message_id = ANY($2::text[])
+    """
+    update_sql = """
+    UPDATE emails_raw
+    SET label_ids = $3::jsonb
+    WHERE account_id = $1 AND gmail_message_id = $2
+    """
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(select_sql, account_id, message_ids)
+        for row in rows:
+            current = row["label_ids"] or []
+            labels = {str(item).upper() for item in current}
+            for label in remove_label_ids:
+                labels.discard(str(label).upper())
+            for label in add_label_ids:
+                labels.add(str(label).upper())
+            await conn.execute(update_sql, account_id, row["gmail_message_id"], list(labels))
+
+
+def _build_triage_response(groups: dict[tuple[str, str, str, str], dict[str, Any]]) -> TriagePreviewResponse:
     """그룹 집계 데이터를 API 응답 모델 형태로 변환합니다."""
     items: list[TriageGroupItem] = []
     for group in groups.values():
@@ -251,6 +325,7 @@ def _build_triage_response(groups: dict[tuple[str, str, str], dict[str, object]]
             TriageGroupItem(
                 group_id=str(group["group_id"]),
                 bucket=str(group["bucket"]),
+                label_group=str(group["label_group"]),
                 sender=str(group["sender"]),
                 category=str(group["category"]),
                 count=count,
@@ -264,6 +339,7 @@ def _build_triage_response(groups: dict[tuple[str, str, str], dict[str, object]]
     sorted_groups = sorted(items, key=lambda item: item.count, reverse=True)
     bucket_summary = _build_bucket_summary(sorted_groups)
     category_summary = _build_category_summary(sorted_groups)
+    label_summary = _build_label_summary(sorted_groups)
 
     return TriagePreviewResponse(
         total_unread=sum(g.count for g in sorted_groups if g.bucket == "unread"),
@@ -271,6 +347,7 @@ def _build_triage_response(groups: dict[tuple[str, str, str], dict[str, object]]
         groups=sorted_groups,
         bucket_summary=bucket_summary,
         category_summary=category_summary,
+        label_summary=label_summary,
     )
 
 
@@ -319,3 +396,47 @@ def _build_category_summary(groups: list[TriageGroupItem]) -> list[CategorySumma
     sorted_counts = sorted(counts.items(), key=lambda item: item[1], reverse=True)
     return [CategorySummaryItem(category=category, count=count) for category, count in sorted_counts]
 
+
+def _detect_label_group(label_ids: list[str] | object) -> str:
+    """label_ids를 기반으로 화면 표시용 라벨 그룹을 계산합니다."""
+    if not isinstance(label_ids, list):
+        return "normal"
+
+    labels = {str(item).upper() for item in label_ids}
+    if "IMPORTANT" in labels:
+        return "important"
+    if "STARRED" in labels:
+        return "starred"
+
+    system_labels = {
+        "INBOX",
+        "UNREAD",
+        "SPAM",
+        "TRASH",
+        "SENT",
+        "DRAFT",
+        "IMPORTANT",
+        "STARRED",
+        "CATEGORY_PERSONAL",
+        "CATEGORY_SOCIAL",
+        "CATEGORY_PROMOTIONS",
+        "CATEGORY_UPDATES",
+        "CATEGORY_FORUMS",
+    }
+    if any(label not in system_labels for label in labels):
+        return "user_labeled"
+    return "normal"
+
+
+def _build_label_summary(groups: list[TriageGroupItem]) -> list[LabelSummaryItem]:
+    """라벨 그룹별 메일 수를 계산합니다."""
+    counts: dict[str, int] = {"important": 0, "starred": 0, "user_labeled": 0, "normal": 0}
+    for group in groups:
+        counts[group.label_group] = counts.get(group.label_group, 0) + group.count
+
+    order = ["important", "starred", "user_labeled", "normal"]
+    return [
+        LabelSummaryItem(label_group=label_group, count=counts[label_group])
+        for label_group in order
+        if counts[label_group] > 0
+    ]
