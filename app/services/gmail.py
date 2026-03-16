@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 from email.header import decode_header, make_header
 from typing import Any
 
@@ -115,7 +115,7 @@ class GmailService:
             for chunk in chunks:
                 payload = {
                     "ids": chunk,
-                    "removeLabelIds": ["INBOX"],
+                    "addLabelIds": ["STARRED"],
                 }
                 response = await client.post(url, headers=headers, json=payload)
                 if response.status_code >= 400:
