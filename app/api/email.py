@@ -445,3 +445,4 @@ def _build_label_summary(groups: list[TriageGroupItem]) -> list[LabelSummaryItem
 def _build_gmail_message_link(message_id: str) -> str:
     """gmail_message_id를 Gmail 웹 링크로 변환합니다."""
     return f"https://mail.google.com/mail/u/0/#inbox/{message_id}"
+
