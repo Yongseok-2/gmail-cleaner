@@ -1,6 +1,6 @@
 ﻿import asyncio
 from email.header import decode_header, make_header
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import HTTPException, status
@@ -93,16 +93,21 @@ class GmailService:
 
         if action == "archive":
             await self._batch_archive(access_token=access_token, user_id=user_id, message_ids=message_ids)
-            return {"processed_count": len(message_ids), "failed_ids": []}
+            return {"processed_count": len(message_ids), "failed_ids": [], "missing_ids": []}
 
-        failed_ids = await self._trash_messages(
+        trash_result = await self._trash_messages(
             access_token=access_token,
             user_id=user_id,
             message_ids=message_ids,
         )
+        failed_ids = trash_result["failed_ids"]
+        missing_ids = trash_result["missing_ids"]
+
+        # missing_ids(이미 Gmail에서 삭제됨)는 UI/DB 정리 대상으로 간주해 성공 처리한다.
         return {
             "processed_count": len(message_ids) - len(failed_ids),
             "failed_ids": failed_ids,
+            "missing_ids": missing_ids,
         }
 
     async def apply_label_updates(
@@ -162,8 +167,8 @@ class GmailService:
         access_token: str,
         user_id: str,
         message_ids: list[str],
-    ) -> list[str]:
-        """Move messages to trash and return failed IDs."""
+    ) -> dict[str, list[str]]:
+        """Move messages to trash and split failed vs already-missing IDs."""
         headers = {"Authorization": f"Bearer {access_token}"}
         async with httpx.AsyncClient(timeout=20) as client:
             tasks = [
@@ -178,10 +183,17 @@ class GmailService:
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         failed_ids: list[str] = []
+        missing_ids: list[str] = []
         for message_id, result in zip(message_ids, results):
             if isinstance(result, Exception):
                 failed_ids.append(message_id)
-        return failed_ids
+                continue
+            if result == "missing":
+                missing_ids.append(message_id)
+            elif result == "failed":
+                failed_ids.append(message_id)
+
+        return {"failed_ids": failed_ids, "missing_ids": missing_ids}
 
     async def _trash_one(
         self,
@@ -189,12 +201,15 @@ class GmailService:
         headers: dict[str, str],
         user_id: str,
         message_id: str,
-    ) -> None:
-        """Move one message to trash."""
+    ) -> Literal["ok", "missing", "failed"]:
+        """Move one message to trash and classify outcome."""
         url = f"{GMAIL_API_BASE}/users/{user_id}/messages/{message_id}/trash"
         response = await client.post(url, headers=headers)
-        if response.status_code >= 400:
-            raise HTTPException(status_code=400, detail=response.text)
+        if response.status_code < 400:
+            return "ok"
+        if response.status_code == 404:
+            return "missing"
+        return "failed"
 
     async def _list_message_ids(
         self,

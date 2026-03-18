@@ -332,6 +332,7 @@ def _build_triage_response(groups: dict[tuple[str, str, str, str], dict[str, Any
                 avg_confidence_score=round(confidence_sum / count, 4) if count else 0.0,
                 review_required_count=int(group["review_required_count"]),
                 message_ids=[str(mid) for mid in group["message_ids"] if mid],
+                message_links=[_build_gmail_message_link(str(mid)) for mid in group["message_ids"] if mid],
                 sample_subjects=[str(subject) for subject in group["sample_subjects"]],
             )
         )
@@ -440,3 +441,8 @@ def _build_label_summary(groups: list[TriageGroupItem]) -> list[LabelSummaryItem
         for label_group in order
         if counts[label_group] > 0
     ]
+
+def _build_gmail_message_link(message_id: str) -> str:
+    """gmail_message_id를 Gmail 웹 링크로 변환합니다."""
+    return f"https://mail.google.com/mail/u/0/#inbox/{message_id}"
+
