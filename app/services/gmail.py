@@ -15,8 +15,8 @@ class GmailService:
         self,
         access_token: str,
         user_id: str = "me",
-        max_results: int = 20,
-    ) -> list[dict[str, Any]]:
+        max_results: int = 1000,
+    ) -> dict[str, Any]:
         """Fetch all mail messages except trash/spam for initial sync."""
         headers = {"Authorization": f"Bearer {access_token}"}
         query = "-in:trash -in:spam"
@@ -41,18 +41,24 @@ class GmailService:
             detail_results = await asyncio.gather(*detail_tasks, return_exceptions=True)
 
         emails: list[dict[str, Any]] = []
+        failed_count = 0
         for result in detail_results:
             if isinstance(result, Exception):
+                failed_count += 1
                 continue
             emails.append(result)
-        return emails
+        return {
+            "emails": emails,
+            "message_id_count": len(message_ids),
+            "detail_failed_count": failed_count,
+        }
 
     async def fetch_triage_emails(
         self,
         access_token: str,
         user_id: str = "me",
-        max_unread: int = 100,
-        max_read: int = 100,
+        max_unread: int = 1000,
+        max_read: int = 1000,
     ) -> dict[str, list[dict[str, Any]]]:
         """Fetch unread and read buckets for triage."""
         unread_query = "is:unread -in:trash -in:spam"
