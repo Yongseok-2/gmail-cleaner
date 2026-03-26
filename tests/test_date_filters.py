@@ -21,7 +21,7 @@ def test_build_date_filter_clause_range() -> None:
             end_date="2026-01-31",
         )
     )
-    assert "BETWEEN $4::date AND ($5::date" in clause
+    assert "BETWEEN $2::date AND ($3::date" in clause
     assert params == ["2026-01-01", "2026-01-31"]
 
 

@@ -1,4 +1,4 @@
-from email.utils import parseaddr
+﻿from email.utils import parseaddr
 from datetime import UTC, datetime
 from typing import Any
 import json
@@ -44,7 +44,8 @@ def _resolve_access_token(body_token: str | None, cookie_token: str | None) -> s
 @router.post("/sync", response_model=EmailSyncResponse, summary="????? ?? ???")
 async def sync_unread_emails(payload: EmailSyncRequest, access_cookie: str | None = Cookie(default=None, alias=settings.auth_access_cookie_name)) -> EmailSyncResponse:
     access_token = _resolve_access_token(payload.access_token, access_cookie)
-    inbox_emails = await gmail_service.fetch_unread_emails(access_token=access_token, user_id=payload.user_id, max_results=payload.max_results)
+    inbox_result = await gmail_service.fetch_unread_emails(access_token=access_token, user_id=payload.user_id, max_results=payload.max_results)
+    inbox_emails = inbox_result["emails"]
 
     published_count = 0
     for email in inbox_emails:
@@ -52,7 +53,12 @@ async def sync_unread_emails(payload: EmailSyncRequest, access_cookie: str | Non
         await kafka_email_producer.publish_email(email)
         published_count += 1
 
-    return EmailSyncResponse(fetched_count=len(inbox_emails), published_count=published_count, topic=kafka_email_producer.topic)
+    return EmailSyncResponse(
+        fetched_count=inbox_result["message_id_count"],
+        detail_failed_count=inbox_result["detail_failed_count"],
+        published_count=published_count,
+        topic=kafka_email_producer.topic,
+    )
 
 
 @router.post("/triage/preview", response_model=TriagePreviewResponse, summary="?? ?? ????")
@@ -98,11 +104,11 @@ async def preview_triage_groups_from_db(payload: TriagePreviewDbRequest) -> Tria
             a.internal_date,
             a.category, a.confidence_score, a.review_required
         FROM email_analysis a
-        WHERE a.account_id = $3 AND NOT (a.label_ids ?| ARRAY['TRASH', 'SPAM']) {date_filter_clause}
+        WHERE a.account_id = $1 AND NOT (a.label_ids ?| ARRAY['TRASH', 'SPAM']) {date_filter_clause}
     ), unread_rows AS (
-        SELECT *, 'unread'::text AS bucket FROM source WHERE (label_ids ? 'UNREAD') ORDER BY internal_ts DESC NULLS LAST LIMIT $1
+        SELECT *, 'unread'::text AS bucket FROM source WHERE (label_ids ? 'UNREAD') ORDER BY internal_ts DESC NULLS LAST
     ), read_rows AS (
-        SELECT *, 'read'::text AS bucket FROM source WHERE NOT (label_ids ? 'UNREAD') AND internal_ts IS NOT NULL ORDER BY internal_ts DESC NULLS LAST LIMIT $2
+        SELECT *, 'read'::text AS bucket FROM source WHERE NOT (label_ids ? 'UNREAD') AND internal_ts IS NOT NULL ORDER BY internal_ts DESC NULLS LAST
     )
     SELECT * FROM unread_rows
     UNION ALL
@@ -111,7 +117,7 @@ async def preview_triage_groups_from_db(payload: TriagePreviewDbRequest) -> Tria
 
     pool = get_db_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(query, payload.max_unread, payload.max_read, payload.account_id, *date_filter_params)
+        rows = await conn.fetch(query, payload.account_id, *date_filter_params)
 
     groups: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
@@ -136,7 +142,7 @@ async def preview_triage_groups_from_db(payload: TriagePreviewDbRequest) -> Tria
             if message_date:
                 group["message_dates"].append(message_date)
             subject = str(row["subject"] or "")
-            if subject and len(group["sample_subjects"]) < 3:
+            if subject:
                 group["sample_subjects"].append(subject)
 
     return _build_triage_response(groups=groups)
@@ -347,9 +353,9 @@ def _build_date_filter_clause(payload: TriagePreviewDbRequest) -> tuple[str, lis
     if payload.date_filter == "range":
         if not payload.start_date or not payload.end_date:
             return "", []
-        return (" AND to_timestamp((r.internal_date::bigint) / 1000.0) BETWEEN $4::date AND ($5::date + INTERVAL '1 day' - INTERVAL '1 second')", [payload.start_date, payload.end_date])
+        return (" AND to_timestamp((a.internal_date::bigint) / 1000.0) BETWEEN $2::date AND ($3::date + INTERVAL '1 day' - INTERVAL '1 second')", [payload.start_date, payload.end_date])
     months_map = {"1m": 1, "3m": 3, "6m": 6}
     months = months_map.get(payload.date_filter)
     if months is None:
         return "", []
-    return (" AND to_timestamp((r.internal_date::bigint) / 1000.0) <= NOW() - make_interval(months => $4::int)", [months])
+    return (" AND to_timestamp((a.internal_date::bigint) / 1000.0) <= NOW() - make_interval(months => $2::int)", [months])
